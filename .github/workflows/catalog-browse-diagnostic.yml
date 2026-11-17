@@ -1,0 +1,29 @@
+name: Regional Browse shelf diagnostic
+
+# On-demand public editorial check, separated from the offline tests.
+on:
+  pull_request:
+    paths:
+      - 'scripts/catalog_browse_probe.py'
+      - 'tests/test_browse_probe.py'
+      - '.github/workflows/catalog-browse-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regional-shelves:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Offline parser contract
+        run: python -m pytest -q tests/test_browse_probe.py
+      - name: Compare editorial rooms in BR, FR, US
+        run: python -m scripts.catalog_browse_probe --countries br fr us
