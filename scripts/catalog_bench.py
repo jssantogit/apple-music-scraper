@@ -374,17 +374,20 @@ def safe_error(message):
     return text[:180]
 
 
-def summarize(rows, *, expected_routes, strict_empty=False, expected_countries=None):
+def summarize(rows, *, expected_routes, strict_empty=False, expected_countries=None,
+              min_followups_per_country=0):
     expected = set(expected_routes)
     actual = {row["path"] for row in rows}
     uncovered = sorted(expected - actual)
+    countries = (sorted({str(country).lower() for country in expected_countries})
+                 if expected_countries is not None else [])
     if expected_countries is None:
         covered_cases = len(actual & expected)
         total_cases_expected = len(expected)
         missing_cases = []
     else:
-        expected_pairs = {(str(country).lower(), path)
-                          for country in expected_countries for path in expected}
+        expected_pairs = {(country, path)
+                          for country in countries for path in expected}
         actual_pairs = {(str(row.get("country", "")).lower(), row["path"])
                         for row in rows}
         missing_cases = [f"{country}:{path}" for country, path in
@@ -393,6 +396,15 @@ def summarize(rows, *, expected_routes, strict_empty=False, expected_countries=N
         total_cases_expected = len(expected_pairs)
     failed = sum(1 for row in rows if row["result"] in ("fail", "blocked"))
     warned = sum(1 for row in rows if row["result"] == "warn")
+    attempted = [row for row in rows if row.get("followup", {}).get("result")
+                 not in (None, "not_applicable")]
+    unavailable = sum(1 for row in rows if row.get("followup", {}).get("result")
+                      == "not_applicable")
+    attempts_by_country = {country: sum(
+        str(row.get("country", "")).lower() == country for row in attempted
+    ) for country in countries}
+    shortfall = [country for country in countries
+                 if attempts_by_country[country] < min_followups_per_country]
     return {
         "covered": len(actual & expected),
         "total_endpoints": len(expected),
@@ -403,8 +415,12 @@ def summarize(rows, *, expected_routes, strict_empty=False, expected_countries=N
         "cases": len(rows),
         "failed_cases": failed,
         "warning_cases": warned,
-        "passed": not uncovered and not missing_cases and failed == 0
-                  and (not strict_empty or warned == 0),
+        "followup_executed": len(attempted),
+        "followup_not_applicable": unavailable,
+        "followup_by_country": attempts_by_country,
+        "followup_shortfall": shortfall,
+        "passed": not uncovered and not missing_cases and not shortfall
+                  and failed == 0 and (not strict_empty or warned == 0),
     }
 
 
@@ -674,8 +690,11 @@ def main(argv=None):
                   f'{path:32s} {row["elapsed_ms"]:5d}ms {row["reason"]}',
                   flush=True)
             time.sleep(args.delay)
-    overview = summarize(rows, expected_routes=expected,
-                         expected_countries=selected, strict_empty=args.strict_empty)
+    overview = summarize(
+        rows, expected_routes=expected, expected_countries=selected,
+        strict_empty=args.strict_empty,
+        min_followups_per_country=1 if args.profile == "deep" else 0,
+    )
     overview["countries"] = selected
     overview["seed"] = seed
     overview["portfolio"] = portfolio["name"]
@@ -686,30 +705,29 @@ def main(argv=None):
     overview["fixture_ids"] = fixture_ids
     overview["discovery_issues"] = discovery_issues
     overview["results"] = rows
-    overview["followup_cases"] = sum(
-        1 for row in rows if row.get("followup", {}).get("result")
-        not in (None, "not_applicable")
-    )
-    overview["followup_not_applicable"] = sum(
-        1 for row in rows if row.get("followup", {}).get("result") == "not_applicable"
-    )
+
     Path(args.output).write_text(json.dumps(overview, ensure_ascii=False, indent=2) + "\n",
                                  encoding="utf-8")
     summary = [
         "## Catalog validation workbench",
         "",
         f'Seed: {seed}; portfolio: {portfolio["name"]}; query: {term}; countries: {", ".join(selected)}',
-        f'Coverage: {overview["covered"]}/{overview["total_endpoints"]} routes; '
-        f'cases: {overview["cases"]}; failed: {overview["failed_cases"]}; '
-        f'warnings: {overview["warning_cases"]}.',
+        f'Coverage: {overview["covered"]}/{overview["total_endpoints"]} distinct routes, '
+        f'{overview["covered_cases"]}/{overview["total_cases_expected"]} country-route cases; '
+        f'failed: {overview["failed_cases"]}; warnings: {overview["warning_cases"]}.',
+        f'Second-page probes: {overview["followup_executed"]} executed, '
+        f'{overview["followup_not_applicable"]} without next cursor; '
+        f'by country: {overview["followup_by_country"]}; '
+        f'countries with insufficient evidence: {overview["followup_shortfall"]}.',
         "",
-        "| Country | Endpoint | Result | HTTP | Time | Note |",
-        "| --- | --- | --- | ---: | ---: | --- |",
+        "| Country | Endpoint | Result | HTTP | Time | Page 2 | Note |",
+        "| --- | --- | --- | ---: | ---: | --- | --- |",
     ]
     for row in rows:
         summary.append(
             f'| {row["country"].upper()} | {row["path"]} | {row["result"]} | '
             f'{row["http_status"] or "-"} | {row["elapsed_ms"]} ms | '
+            f'{row.get("followup", {}).get("result", "—")} | '
             f'{row["reason"].replace("|", "/")} |'
         )
     step_summary = os.getenv("GITHUB_STEP_SUMMARY")
@@ -717,7 +735,9 @@ def main(argv=None):
         with open(step_summary, "a", encoding="utf-8") as f:
             f.write("\n".join(summary) + "\n")
     print(f'BENCH result={"PASS" if overview["passed"] else "FAIL"}; '
-          f'coverage={overview["covered"]}/{overview["total_endpoints"]}; '
+          f'coverage={overview["covered_cases"]}/{overview["total_cases_expected"]}; '
+          f'page2={overview["followup_executed"]}; '
+          f'page2_shortfall={overview["followup_shortfall"]}; '
           f'failed={overview["failed_cases"]}; warnings={overview["warning_cases"]}')
     return 0 if overview["passed"] else 1
 
