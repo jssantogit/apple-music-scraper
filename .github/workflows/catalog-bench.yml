@@ -4,11 +4,6 @@ name: Catalog workbench - all 51 endpoints
 # and intentionally fails on missing fixture, wrong shape or HTTP failure.
 on:
   pull_request:
-    paths:
-      - 'scripts/catalog_bench.py'
-      - 'scripts/catalog_bench_cases.json'
-      - 'tests/test_catalog_bench.py'
-      - '.github/workflows/catalog-bench.yml'
   workflow_dispatch:
     inputs:
       seed:
