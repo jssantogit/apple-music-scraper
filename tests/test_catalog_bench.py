@@ -92,3 +92,43 @@ def test_report_fails_closed_on_unexecuted_endpoints():
 def test_sanitize_error_never_emits_jwt():
     redacted = bench.safe_error("bad eyJhbGciOiJFUzI1NiJ9.eyJpc3MiOiJBTlQifQ.abc123 secret")
     assert "eyJ" not in redacted
+
+
+def test_artist_specific_search_can_rotate_independently_from_base_query(context):
+    search_cases = {"labels": ["Republic Records", "EMI", "Sony Music"]}
+    first = bench.case_for("/search/labels", context, country="us",
+                           term="Gilberto Gil", seed=0, search_cases=search_cases)
+    second = bench.case_for("/search/labels", context, country="us",
+                            term="Gilberto Gil", seed=1, search_cases=search_cases)
+    assert first["query"] in search_cases["labels"]
+    assert second["query"] in search_cases["labels"]
+    assert first["query"] != second["query"]
+
+
+def test_related_album_shelves_are_not_marked_empty_when_other_sections_have_items():
+    response = {
+        "album": {"id": "1"}, "other_versions": [],
+        "more_by_artist": [{"id": "2"}], "you_might_also_like": [],
+    }
+    checked = bench.validate_result("/albums/related", 200, response, {})
+    assert checked["result"] == "pass"
+    assert checked["observed_count"] == 1
+
+
+def test_identity_drift_is_detected_for_a_detail_endpoint():
+    response = {"id": "777", "name": "Different artist",
+                "top_songs": [], "albums": [], "singles_and_eps": [],
+                "similar_artists": []}
+    checked = bench.validate_result("/artists/details", 200, response,
+                                     {"artist": "123"})
+    assert checked["result"] == "fail"
+    assert "identity" in checked["reason"]
+
+
+def test_missing_required_parameters_are_rejected_before_network():
+    for path, schema, _handler, _paginated in routes.ENDPOINTS:
+        if not any(field.required for field in schema().fields.values()):
+            continue
+        status, response = bench.wsgi_get(path, {})
+        assert status == 400, path
+        assert "error" in response
