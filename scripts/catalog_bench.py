@@ -346,6 +346,26 @@ def validate_result(path, status, payload, params):
             followup_case(path, params, payload)
         except ValueError as exc:
             return {"result": "fail", "reason": str(exc)}
+    if path == "/curators/details":
+        # Apple radio/editorial curators may have rich sections but no
+        # playlists relation. Validate the actual content instead of labeling
+        # all such curators empty.
+        playlists, sections = payload.get("playlists"), payload.get("sections")
+        if not isinstance(playlists, list) or not isinstance(sections, list):
+            return {"result": "fail", "reason": "curator collections must be arrays"}
+        if any(not isinstance(x, dict) for x in playlists + sections):
+            return {"result": "fail", "reason": "curator collections contain non-object"}
+        editorial_count = 0
+        for shelf in sections:
+            items = shelf.get("items") or []
+            if not isinstance(items, list) or any(not isinstance(x, dict) for x in items):
+                return {"result": "fail", "reason": "curator editorial items invalid"}
+            editorial_count += len(items)
+        count = len(playlists) + editorial_count
+        if count:
+            return {"result": "pass", "reason": "", "observed_count": count}
+        return {"result": "warn", "reason": "empty curator playlists and sections",
+                "observed_count": 0}
     list_field = OBSERVED_LIST.get(path)
     if list_field is not None:
         fields = (list_field,) if isinstance(list_field, str) else list_field
@@ -436,6 +456,88 @@ def _candidate_id(entries, seed, tag):
     return str(_pick(seed, tag, entries).get("id"))
 
 
+def classify_curator(curator_id, detail_http, detail, playlist_http, paging):
+    """Differentiate playable playlist curators from editorial-only curators."""
+    row = {"id": str(curator_id), "detail_http": detail_http,
+           "playlist_http": playlist_http, "status": "invalid",
+           "detail_playlist_count": 0, "paged_playlist_count": 0,
+           "editorial_item_count": 0, "curator_type": None}
+    if (detail_http != 200 or playlist_http != 200 or
+            not isinstance(detail, dict) or not isinstance(paging, dict) or
+            str(detail.get("id")) != str(curator_id) or
+            str(paging.get("curator_id")) != str(curator_id)):
+        return row
+    playlists, paged, sections = (detail.get("playlists"),
+                                  paging.get("playlists"), detail.get("sections"))
+    if not all(isinstance(group, list) for group in (playlists, paged, sections)):
+        return row
+    if any(not isinstance(x, dict) for x in playlists + paged + sections):
+        return row
+    editorial_count = 0
+    for section in sections:
+        items = section.get("items") or []
+        if not isinstance(items, list) or any(not isinstance(x, dict) for x in items):
+            return row
+        editorial_count += len(items)
+    row.update(detail_playlist_count=len(playlists),
+               paged_playlist_count=len(paged), editorial_item_count=editorial_count,
+               curator_type=detail.get("curator_type"))
+    row["status"] = ("with_playlists" if playlists or paged else
+                     "editorial_only" if editorial_count else "empty")
+    return row
+
+
+def select_verified(candidates, seed=0):
+    matches = [row for row in candidates if row.get("status") == "with_playlists"]
+    return matches[int(seed) % len(matches)] if matches else None
+
+
+def resolve_curator_fixture(*, country, term, seed, pool, get, initial,
+                            max_candidates=6):
+    """Discover and prove a curator fixture, keeping rejected cases as evidence.
+
+    Avoid the first arbitrary search curator: it might publish radio shows
+    but zero playlists. If no playlist curator is available, preserve an
+    editorial-only/empty case as a transparent probe, never invent content.
+    """
+    base = {"country": country, "lang": "en-US"}
+    sources = {}
+    for item in initial:
+        if isinstance(item, dict) and item.get("id"):
+            sources.setdefault(str(item["id"]), []).append("search/all:" + term)
+    cases = pool.get("search_cases", {}).get("curators") or []
+    for offset in range(min(2, len(cases))):
+        query = cases[(int(seed) + offset) % len(cases)]
+        found = get("/search/curators", {**base, "query": query,
+                                         "page": "1", "limit": "6"})
+        for item in _entries(found, "curators"):
+            sources.setdefault(str(item["id"]), []).append("search/curators:" + query)
+    if not sources:
+        for item in (pool.get("fallback_ids", {}).get("curator") or [])[:1]:
+            sources.setdefault(str(item), []).append("fallback")
+    candidate_ids = list(sources)
+    if candidate_ids:
+        shift = int(seed) % len(candidate_ids)
+        candidate_ids = (candidate_ids[shift:] + candidate_ids[:shift])[:max_candidates]
+    observations = []
+    for cid in candidate_ids:
+        detail = get("/curators/details", {**base, "curator": cid})
+        paging = get("/curators/playlists", {**base, "curator": cid,
+                                             "page": "1", "limit": "4"})
+        trial = classify_curator(cid, 200 if detail else 0, detail,
+                                 200 if paging else 0, paging)
+        trial["source"] = sources[cid]
+        observations.append(trial)
+    preferred = select_verified(observations, seed)
+    if preferred is None:
+        preferred = next((row for row in observations
+                          if row["status"] == "editorial_only"), None)
+    if preferred is None:
+        preferred = next((row for row in observations if row["status"] == "empty"), None)
+    return (preferred["id"] if preferred else None,
+            preferred, observations)
+
+
 def find_usable_genre(candidates, *, seed, probe, max_attempts=8):
     """Only test editorial genre details with a proven valid genre fixture.
 
@@ -488,7 +590,6 @@ def discover(country, term, seed, pool):
         "playlist": ("playlists",),
         "video": ("music_videos",),
         "station": ("stations",),
-        "curator": ("curators",),
         "label": ("labels",),
     }
     for key, (collection,) in selected.items():
@@ -505,7 +606,6 @@ def discover(country, term, seed, pool):
         "playlist": ("/search/playlists", "playlists"),
         "video": ("/search/music-videos", "music_videos"),
         "label": ("/search/labels", "labels"),
-        "curator": ("/search/curators", "curators"),
         "station": ("/stations/live", "stations"),
     }
     for key, (path, collection) in extra.items():
@@ -521,6 +621,23 @@ def discover(country, term, seed, pool):
         identifier = _candidate_id(_entries(payload, collection), seed, path)
         if identifier:
             ctx[key], source[key] = identifier, path
+
+    curator_id, curator_evidence, curator_trials = resolve_curator_fixture(
+        country=country, term=term, seed=seed, pool=pool, get=get,
+        initial=_entries(found, "curators")
+    )
+    if curator_id:
+        ctx["curator"] = curator_id
+        source["curator"] = ("verified:" + curator_evidence["status"] +
+                             ":" + ",".join(curator_evidence["source"]))
+    for trial in curator_trials:
+        if trial["status"] != "with_playlists":
+            issues.append({
+                "path": "/curators/details", "candidate": trial["id"],
+                "classification": trial["status"],
+                "playlist_count": trial["paged_playlist_count"],
+                "editorial_item_count": trial["editorial_item_count"],
+            })
 
     genres = get("/genres", base)
     ctx["genre"], genre_trials = find_usable_genre(
@@ -557,6 +674,10 @@ def discover(country, term, seed, pool):
     source["region"] = "/charts/daily-top-100-list" if regions else "default"
 
     for key, options in pool.get("fallback_ids", {}).items():
+        if key == "curator":
+            # Curators are already classified above; never overwrite a
+            # missing/invalid fixture with an unverified fixed ID.
+            continue
         if not ctx.get(key) and options:
             ctx[key] = _pick(seed, f"fallback:{key}", options)
             source[key] = "documented-fallback"
