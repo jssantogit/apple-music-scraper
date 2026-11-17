@@ -36,7 +36,10 @@ def search_all(query, limit=5, country=None, lang=None):
                                           "limit": limit}, lang=lang)
 
     main, more = run_parallel([core, extra])
-    curators = _block(more, "apple-curators").get("data", []) + _block(more, "curators").get("data", [])
+    # API relationships can be explicitly null, not just absent.
+    curators = (_block(more, "apple-curators").get("data") or []) + (
+        _block(more, "curators").get("data") or []
+    )
     return {
         "query": query,
         "top_results": P.items(_block(main, "topResults").get("data"), typed=True),
