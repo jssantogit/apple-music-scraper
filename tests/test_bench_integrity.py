@@ -143,3 +143,36 @@ def test_deep_runner_records_absent_next_page_instead_of_claiming_it_tested(monk
     assert row["result"] == "pass"
     assert len(calls) == 1
     assert row["followup"]["result"] == "not_applicable"
+
+
+def test_summary_requires_page_two_evidence_for_every_deep_storefront():
+    rows = [
+        {"country": "br", "path": "/search/songs", "result": "pass",
+         "followup": {"result": "pass", "page": "2"}},
+        {"country": "us", "path": "/search/songs", "result": "pass",
+         "followup": {"result": "not_applicable"}},
+    ]
+    summary = bench.summarize(
+        rows, expected_routes={"/search/songs"}, expected_countries={"br", "us"},
+        min_followups_per_country=1,
+    )
+    assert summary["passed"] is False
+    assert summary["followup_executed"] == 1
+    assert summary["followup_not_applicable"] == 1
+    assert summary["followup_shortfall"] == ["us"]
+
+
+def test_summary_accepts_two_stores_with_verified_second_pages():
+    rows = [
+        {"country": "br", "path": "/search/songs", "result": "pass",
+         "followup": {"result": "pass", "page": "2"}},
+        {"country": "us", "path": "/search/songs", "result": "pass",
+         "followup": {"result": "pass", "page": "2"}},
+    ]
+    summary = bench.summarize(
+        rows, expected_routes={"/search/songs"}, expected_countries={"br", "us"},
+        min_followups_per_country=1,
+    )
+    assert summary["passed"] is True
+    assert summary["followup_executed"] == 2
+    assert summary["followup_shortfall"] == []
