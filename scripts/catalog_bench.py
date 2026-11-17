@@ -94,7 +94,7 @@ OBSERVED_LIST = {
     "/search/artists": "artists", "/search/playlists": "playlists",
     "/search/music-videos": "music_videos", "/search/stations": "stations",
     "/search/curators": "curators", "/search/labels": "labels",
-    "/albums/details": "tracks", "/albums/related": "other_versions",
+    "/albums/details": "tracks", "/albums/related": ("other_versions", "more_by_artist", "you_might_also_like"),
     "/artists/details": "top_songs", "/artists/top-songs": "songs",
     "/artists/albums": "albums", "/artists/music-videos": "music_videos",
     "/artists/playlists": "playlists", "/artists/similar": "artists",
@@ -146,7 +146,7 @@ def _need(context, field):
     return result
 
 
-def case_for(path, context, *, country, term, seed=0):
+def case_for(path, context, *, country, term, seed=0, search_cases=None):
     """Build valid request args from discovered IDs, not a fixed song/artist."""
     if path not in REQUIRED_RESPONSE_KEYS:
         raise ValueError(f"endpoint not mapped: {path}")
@@ -159,7 +159,9 @@ def case_for(path, context, *, country, term, seed=0):
     page_size = str(_pick(seed, path, (2, 4, 6)))
 
     if path.startswith("/search/"):
-        params["query"] = term
+        category = path.rsplit("/", 1)[-1]
+        choices = (search_cases or {}).get(category) or []
+        params["query"] = choices[int(seed) % len(choices)] if choices else term
         if path not in ("/search/all", "/search/auto-complete"):
             params.update(page="1", limit=page_size)
         elif path == "/search/all":
@@ -259,6 +261,18 @@ def validate_result(path, status, payload, params):
         return {"result": "fail", "reason": "missing fields: " + ", ".join(missing)}
     if path in SINGLE_ENTITY_PATHS and (not payload.get("id") or not payload.get("name")):
         return {"result": "fail", "reason": "missing nonempty identity id/name"}
+    identity_param = {
+        "/songs/details": "song", "/albums/details": "album",
+        "/artists/details": "artist", "/playlists/details": "playlist",
+        "/music-videos/details": "video", "/stations/details": "station",
+        "/labels/details": "label", "/curators/details": "curator",
+    }.get(path)
+    identity = params.get(identity_param) if identity_param else None
+    # ISRC / UPC are alternate lookup keys, not resource IDs.
+    if identity and (identity.isdigit() and len(identity) <= 11 or
+                     identity.startswith(("pl.", "ra."))):
+        if str(payload.get("id")) != identity:
+            return {"result": "fail", "reason": "identity mismatch between query and response"}
     if path in PAGINATED_PATHS:
         if not isinstance(payload.get("current_page"), int):
             return {"result": "fail", "reason": "missing numeric current_page"}
@@ -268,14 +282,18 @@ def validate_result(path, status, payload, params):
             return {"result": "fail", "reason": "missing positive per_page"}
     list_field = OBSERVED_LIST.get(path)
     if list_field is not None:
-        values = payload.get(list_field)
-        if not isinstance(values, list):
-            return {"result": "fail", "reason": f"{list_field} is not a list"}
-        if any(not isinstance(item, dict) for item in values):
-            return {"result": "fail", "reason": f"{list_field} includes non-object items"}
-        if not values:
-            return {"result": "warn", "reason": f"empty {list_field}", "observed_count": 0}
-        return {"result": "pass", "reason": "", "observed_count": len(values)}
+        fields = (list_field,) if isinstance(list_field, str) else list_field
+        count = 0
+        for field in fields:
+            values = payload.get(field)
+            if not isinstance(values, list):
+                return {"result": "fail", "reason": f"{field} is not a list"}
+            if any(not isinstance(item, dict) for item in values):
+                return {"result": "fail", "reason": f"{field} includes non-object items"}
+            count += len(values)
+        if count == 0:
+            return {"result": "warn", "reason": f"empty {','.join(fields)}", "observed_count": 0}
+        return {"result": "pass", "reason": "", "observed_count": count}
     return {"result": "pass", "reason": "", "observed_count": None}
 
 
@@ -370,7 +388,10 @@ def discover(country, term, seed, pool):
             continue
         args = dict(base)
         if path.startswith("/search/"):
-            args.update(query=term, limit="5")
+            category = path.rsplit("/", 1)[-1]
+            cases = pool.get("search_cases", {}).get(category) or []
+            query = cases[int(seed) % len(cases)] if cases else term
+            args.update(query=query, limit="5")
         payload = get(path, args)
         identifier = _candidate_id(_entries(payload, collection), seed, path)
         if identifier:
@@ -475,7 +496,9 @@ def main(argv=None):
         discovery_issues[country] = issues
         for path, schema, _handler, _paginated in routes.ENDPOINTS:
             try:
-                params = case_for(path, ctx, country=country, term=term, seed=seed)
+                search_cases = pool.get("search_cases", {}) if not args.query.strip() else {}
+                params = case_for(path, ctx, country=country, term=term,
+                                  seed=seed, search_cases=search_cases)
                 _, error = load_query(schema, params)
                 if error:
                     raise ValueError(f"fixture fails query validation: {error}")
