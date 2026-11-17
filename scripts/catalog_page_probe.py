@@ -6,8 +6,9 @@ Prints only public IDs, never raw catalog resources or authentication headers.
 import argparse
 import json
 import time
+from urllib.parse import parse_qsl, urlsplit
 
-from apple_music.fetch import catalog_get
+from apple_music.fetch import api_get, catalog_get
 from apple_music import parsers as P
 
 
@@ -23,6 +24,19 @@ def inspect_pair(first, second):
     }
 
 
+def parse_next_cursor(next_link, *, country):
+    """Use only a relative or first-party Apple search cursor."""
+    parsed = urlsplit(next_link or "")
+    expected = f"/v1/catalog/{country.lower()}/search"
+    if (parsed.path != expected or parsed.scheme not in ("", "https") or
+            parsed.netloc not in ("", "amp-api.music.apple.com")):
+        raise ValueError("invalid Apple search next cursor")
+    params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if not params:
+        raise ValueError("empty Apple search cursor")
+    return expected, params
+
+
 def _raw_search(country, term, limit, offset):
     body = catalog_get(country, "search", {
         "term": term, "types": "songs", "limit": limit, "offset": offset or None,
@@ -36,7 +50,13 @@ def _raw_search(country, term, limit, offset):
     parsed_ids = [str(x["id"]) for x in normalized if x.get("id")]
     if raw_ids != parsed_ids:
         raise ValueError("scraper parser changed the song IDs in a search result")
-    return data
+    return data, block.get("next")
+
+
+def _from_cursor(country, cursor):
+    path, params = parse_next_cursor(cursor, country=country)
+    body = api_get(path, params, lang="en-US")
+    return ((((body or {}).get("results") or {}).get("songs") or {}).get("data") or [])
 
 
 def main(argv=None):
@@ -54,11 +74,24 @@ def main(argv=None):
     report = {"country": args.country, "term": args.term, "checks": []}
     for limit in limits:
         for round_no in range(args.rounds):
-            left = _raw_search(args.country, args.term, limit, 0)
+            left, next_cursor = _raw_search(args.country, args.term, limit, 0)
             time.sleep(0.4)
-            right = _raw_search(args.country, args.term, limit, limit)
+            right, _ = _raw_search(args.country, args.term, limit, limit)
             sample = inspect_pair(left, right)
-            sample.update({"limit": limit, "round": round_no + 1})
+            sample.update({"limit": limit, "round": round_no + 1,
+                           "has_upstream_next": bool(next_cursor)})
+            if next_cursor:
+                path, next_query = parse_next_cursor(next_cursor, country=args.country)
+                time.sleep(0.4)
+                cursor_page = _from_cursor(args.country, next_cursor)
+                followed = inspect_pair(left, cursor_page)
+                sample["cursor_path"] = path
+                sample["cursor_offset_params"] = {
+                    key: value for key, value in next_query.items()
+                    if "offset" in key or key == "limit"
+                }
+                sample["cursor_page_ids"] = followed["page2_ids"]
+                sample["cursor_overlap_ids"] = followed["overlap_ids"]
             report["checks"].append(sample)
             time.sleep(0.4)
     print(json.dumps(report, indent=2))
