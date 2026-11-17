@@ -334,6 +334,29 @@ def _candidate_id(entries, seed, tag):
     return str(_pick(seed, tag, entries).get("id"))
 
 
+def find_usable_genre(candidates, *, seed, probe, max_attempts=8):
+    """Only test editorial genre details with a proven valid genre fixture.
+
+    A storefront's flat genre list does not guarantee a matching editorial
+    page. Record rejected IDs instead of masking them as successful results.
+    """
+    ids = list(dict.fromkeys(
+        str(item["id"]) for item in candidates
+        if isinstance(item, dict) and item.get("id")
+    ))
+    attempts = []
+    for index in range(min(len(ids), max_attempts)):
+        identifier = ids[(int(seed) + index) % len(ids)]
+        try:
+            works = bool(probe(identifier))
+        except Exception:
+            works = False
+        attempts.append({"id": identifier, "works": works})
+        if works:
+            return identifier, attempts
+    return None, attempts
+
+
 def discover(country, term, seed, pool):
     """Prefer newly discovered resources. Explicit fallback IDs are a last resort.
 
@@ -398,9 +421,16 @@ def discover(country, term, seed, pool):
             ctx[key], source[key] = identifier, path
 
     genres = get("/genres", base)
-    ctx["genre"] = _candidate_id(_entries(genres, "genres"), seed, "genre")
+    ctx["genre"], genre_trials = find_usable_genre(
+        _entries(genres, "genres"), seed=seed,
+        probe=lambda gid: bool(get("/genres/details", {**base, "genre": gid}).get("genre")),
+    )
+    for trial in genre_trials:
+        if not trial["works"]:
+            issues.append({"path": "/genres/details", "candidate": trial["id"],
+                           "detail": "listed genre has no reachable editorial detail"})
     if ctx["genre"]:
-        source["genre"] = "/genres"
+        source["genre"] = "genre list + verified editorial detail"
 
     browse = get("/browse", base)
     room_ids = [str(s["see_all_id"]) for s in browse.get("sections", [])
@@ -446,6 +476,8 @@ def run_one(path, params, *, country, profile, seed):
         "result": checked["result"], "reason": checked["reason"],
         "http_status": status, "elapsed_ms": elapsed,
         "observed_count": checked.get("observed_count"),
+        "case": {k: v for k, v in params.items()
+                 if k not in ("country", "lang")},
     }
 
 
@@ -488,11 +520,12 @@ def main(argv=None):
         print("FAILED: route inventory mismatch", file=sys.stderr)
         return 2
 
-    rows, fixture_sources, discovery_issues = [], {}, {}
+    rows, fixture_sources, fixture_ids, discovery_issues = [], {}, {}, {}
     started_at = datetime.now(timezone.utc).isoformat()
     for country in selected:
         ctx, sources, issues = discover(country, term, seed, pool)
         fixture_sources[country] = sources
+        fixture_ids[country] = ctx
         discovery_issues[country] = issues
         for path, schema, _handler, _paginated in routes.ENDPOINTS:
             try:
@@ -522,6 +555,7 @@ def main(argv=None):
     overview["observed_at_utc"] = started_at
     # Case identities, public IDs and presence only. Never dump raw payloads.
     overview["fixture_sources"] = fixture_sources
+    overview["fixture_ids"] = fixture_ids
     overview["discovery_issues"] = discovery_issues
     overview["results"] = rows
     Path(args.output).write_text(json.dumps(overview, ensure_ascii=False, indent=2) + "\n",
