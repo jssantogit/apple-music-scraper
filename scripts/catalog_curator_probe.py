@@ -9,48 +9,8 @@ import json
 import os
 import time
 
-from scripts.catalog_bench import read_case_pool, choose_portfolio, wsgi_get
-
-
-def classify_curator(curator_id, detail_http, detail, playlist_http, paging):
-    result = {"id": str(curator_id),
-              "detail_http": detail_http, "playlist_http": playlist_http,
-              "detail_playlist_count": 0, "paged_playlist_count": 0,
-              "editorial_item_count": 0, "curator_type": None,
-              "status": "invalid"}
-    if (detail_http != 200 or playlist_http != 200
-            or not isinstance(detail, dict) or not isinstance(paging, dict)):
-        return result
-    if str(detail.get("id")) != str(curator_id) or str(paging.get("curator_id")) != str(curator_id):
-        return result
-    playlists = detail.get("playlists")
-    paged = paging.get("playlists")
-    sections = detail.get("sections")
-    if not isinstance(playlists, list) or not isinstance(paged, list) or not isinstance(sections, list):
-        return result
-    if any(not isinstance(item, dict) for item in playlists + paged + sections):
-        return result
-    section_items = sum(
-        len(s.get("items") or []) for s in sections
-        if isinstance(s.get("items") or [], list)
-    )
-    result.update(detail_playlist_count=len(playlists), paged_playlist_count=len(paged),
-                  editorial_item_count=section_items,
-                  curator_type=detail.get("curator_type"))
-    if playlists or paged:
-        result["status"] = "with_playlists"
-    elif section_items > 0:
-        result["status"] = "editorial_only"
-    else:
-        result["status"] = "empty"
-    return result
-
-
-def select_verified(candidates, seed=0):
-    matches = [row for row in candidates if row.get("status") == "with_playlists"]
-    if not matches:
-        return None
-    return matches[int(seed) % len(matches)]
+from scripts.catalog_bench import (read_case_pool, choose_portfolio, wsgi_get,
+                                   classify_curator, select_verified)
 
 
 def _safe_ids(payload, field):
