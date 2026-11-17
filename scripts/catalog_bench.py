@@ -13,7 +13,7 @@ import random
 import re
 import sys
 import time
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 from wsgiref.util import setup_testing_defaults
 
 import bottle
@@ -81,6 +81,14 @@ REQUIRED_RESPONSE_KEYS = {
 PAGINATED_PATHS = {
     path for path, _schema, _handler, paginated in routes.ENDPOINTS if paginated
 }
+# A deep sweep reads the following endpoints' second page when advertised.
+SECOND_PAGE_PATHS = {
+    "/search/songs", "/search/albums", "/search/artists",
+    "/artists/top-songs", "/artists/albums", "/playlists/tracks",
+    "/charts/top-songs", "/browse/section",
+}
+# Playlists may intentionally contain the same recording repeatedly.
+STABLE_PAGE_IDS = SECOND_PAGE_PATHS - {"/playlists/tracks", "/browse/section"}
 SINGLE_ENTITY_PATHS = {
     "/songs/details", "/albums/details", "/artists/details",
     "/playlists/details", "/music-videos/details", "/stations/details",
@@ -248,6 +256,54 @@ def wsgi_get(path, params=None):
     return captured["status"], payload
 
 
+def followup_case(path, params, payload):
+    """Resolve the expected page 2+ through our own route, not a remote URL.
+
+    Apple-derived pagination comes from the gateway's own generated next
+    link. Validate its exact path, query and adjacent page before using it.
+    """
+    if path not in PAGINATED_PATHS:
+        raise ValueError("cursor only makes sense for a paginated endpoint")
+    next_link = payload.get("next")
+    if next_link is None or next_link == "":
+        return None
+    if not isinstance(next_link, str):
+        raise ValueError("invalid next cursor: not a URL")
+    parsed = urlsplit(next_link)
+    if parsed.scheme not in ("http", "https") or parsed.path not in (
+        path, "/apple-music" + path,
+    ):
+        raise ValueError("invalid next cursor: wrong route or scheme")
+    raw = parse_qs(parsed.query, keep_blank_values=True)
+    expected_page = str(int(params.get("page", 1)) + 1)
+    if raw.get("page") != [expected_page]:
+        raise ValueError("invalid next cursor: non-adjacent page")
+    expected = {
+        key: [str(value)]
+        for key, value in params.items()
+        if key != "page" and value is not None and value != ""
+    }
+    if {key: value for key, value in raw.items() if key != "page"} != expected:
+        raise ValueError("invalid next cursor: changed query or storefront")
+    return {**params, "page": expected_page}
+
+
+def compare_pages(path, first, second):
+    """Check stable resource lists across adjacent pages, with exceptions."""
+    if path not in STABLE_PAGE_IDS:
+        return {"result": "not_applicable", "reason": "overlap allowed/unstable"}
+    field = OBSERVED_LIST.get(path)
+    if not isinstance(field, str):
+        return {"result": "not_applicable", "reason": "not a single list"}
+    one = {str(item["id"]) for item in first.get(field) or []
+           if isinstance(item, dict) and item.get("id")}
+    two = {str(item["id"]) for item in second.get(field) or []
+           if isinstance(item, dict) and item.get("id")}
+    if one & two:
+        return {"result": "fail", "reason": "duplicate resource IDs across page boundary"}
+    return {"result": "pass", "reason": ""}
+
+
 def validate_result(path, status, payload, params):
     if status != 200:
         return {"result": "fail", "reason": f"HTTP {status}"}
@@ -280,6 +336,16 @@ def validate_result(path, status, payload, params):
             return {"result": "fail", "reason": "page number mismatch"}
         if not isinstance(payload.get("per_page"), int) or payload["per_page"] <= 0:
             return {"result": "fail", "reason": "missing positive per_page"}
+        if payload["per_page"] != int(params.get("limit", payload["per_page"])):
+            return {"result": "fail", "reason": "per_page differs from requested limit"}
+        if payload["current_page"] == 1 and payload.get("previous") is not None:
+            return {"result": "fail", "reason": "first page must have no previous cursor"}
+        if "next" not in payload or "previous" not in payload:
+            return {"result": "fail", "reason": "missing pagination cursors"}
+        try:
+            followup_case(path, params, payload)
+        except ValueError as exc:
+            return {"result": "fail", "reason": str(exc)}
     list_field = OBSERVED_LIST.get(path)
     if list_field is not None:
         fields = (list_field,) if isinstance(list_field, str) else list_field
@@ -291,6 +357,8 @@ def validate_result(path, status, payload, params):
             if any(not isinstance(item, dict) for item in values):
                 return {"result": "fail", "reason": f"{field} includes non-object items"}
             count += len(values)
+        if path in PAGINATED_PATHS and count > int(params.get("limit", payload["per_page"])):
+            return {"result": "fail", "reason": "item count exceeds requested limit"}
         if count == 0:
             return {"result": "warn", "reason": f"empty {','.join(fields)}", "observed_count": 0}
         return {"result": "pass", "reason": "", "observed_count": count}
@@ -306,19 +374,37 @@ def safe_error(message):
     return text[:180]
 
 
-def summarize(rows, *, expected_routes, strict_empty=False):
+def summarize(rows, *, expected_routes, strict_empty=False, expected_countries=None):
+    expected = set(expected_routes)
     actual = {row["path"] for row in rows}
-    uncovered = sorted(set(expected_routes) - actual)
+    uncovered = sorted(expected - actual)
+    if expected_countries is None:
+        covered_cases = len(actual & expected)
+        total_cases_expected = len(expected)
+        missing_cases = []
+    else:
+        expected_pairs = {(str(country).lower(), path)
+                          for country in expected_countries for path in expected}
+        actual_pairs = {(str(row.get("country", "")).lower(), row["path"])
+                        for row in rows}
+        missing_cases = [f"{country}:{path}" for country, path in
+                         sorted(expected_pairs - actual_pairs)]
+        covered_cases = len(expected_pairs & actual_pairs)
+        total_cases_expected = len(expected_pairs)
     failed = sum(1 for row in rows if row["result"] in ("fail", "blocked"))
     warned = sum(1 for row in rows if row["result"] == "warn")
     return {
-        "covered": len(actual & set(expected_routes)),
-        "total_endpoints": len(expected_routes),
+        "covered": len(actual & expected),
+        "total_endpoints": len(expected),
         "uncovered": uncovered,
+        "covered_cases": covered_cases,
+        "total_cases_expected": total_cases_expected,
+        "missing_cases": missing_cases,
         "cases": len(rows),
         "failed_cases": failed,
         "warning_cases": warned,
-        "passed": not uncovered and failed == 0 and (not strict_empty or warned == 0),
+        "passed": not uncovered and not missing_cases and failed == 0
+                  and (not strict_empty or warned == 0),
     }
 
 
@@ -547,7 +633,8 @@ def main(argv=None):
                   f'{path:32s} {row["elapsed_ms"]:5d}ms {row["reason"]}',
                   flush=True)
             time.sleep(args.delay)
-    overview = summarize(rows, expected_routes=expected, strict_empty=args.strict_empty)
+    overview = summarize(rows, expected_routes=expected,
+                         expected_countries=selected, strict_empty=args.strict_empty)
     overview["countries"] = selected
     overview["seed"] = seed
     overview["portfolio"] = portfolio["name"]
