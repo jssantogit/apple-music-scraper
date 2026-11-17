@@ -9,7 +9,7 @@ import time
 from urllib.parse import parse_qsl, urlsplit
 
 from apple_music.fetch import api_get, catalog_get
-from apple_music import parsers as P
+from apple_music import parsers as P, search
 
 
 def inspect_pair(first, second):
@@ -92,6 +92,19 @@ def main(argv=None):
                 }
                 sample["cursor_page_ids"] = followed["page2_ids"]
                 sample["cursor_overlap_ids"] = followed["overlap_ids"]
+                # Exercise the production wrapper with the same query, not
+                # just a manually followed raw Apple cursor.
+                live = search.search_songs(
+                    args.term, page=2, limit=limit, country=args.country, lang="en-US"
+                )
+                scraper_page = [{"id": item["id"]} for item in live["songs"]]
+                scraper_comparison = inspect_pair(left, scraper_page)
+                sample["scraper_page2_ids"] = scraper_comparison["page2_ids"]
+                sample["scraper_overlap_ids"] = scraper_comparison["overlap_ids"]
+                if sample["scraper_overlap_ids"]:
+                    report["checks"].append(sample)
+                    print(json.dumps(report, indent=2))
+                    raise AssertionError("production search cursor still overlaps page one")
             report["checks"].append(sample)
             time.sleep(0.4)
     print(json.dumps(report, indent=2))
