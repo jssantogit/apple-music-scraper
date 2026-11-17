@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "portfolios": [
+    {
+      "name": "electronic",
+      "query": "Daft Punk"
+    },
+    {
+      "name": "brazilian",
+      "query": "Gilberto Gil"
+    },
+    {
+      "name": "pop",
+      "query": "Taylor Swift"
+    },
+    {
+      "name": "rock",
+      "query": "Coldplay"
+    },
+    {
+      "name": "jazz",
+      "query": "Miles Davis"
+    },
+    {
+      "name": "hiphop",
+      "query": "Kendrick Lamar"
+    },
+    {
+      "name": "classical",
+      "query": "Yo-Yo Ma"
+    },
+    {
+      "name": "kpop",
+      "query": "BTS"
+    },
+    {
+      "name": "alternative",
+      "query": "Radiohead"
+    },
+    {
+      "name": "latin",
+      "query": "Shakira"
+    }
+  ],
+  "fallback_ids": {
+    "playlist": [
+      "pl.f4d106fed2bd41149aaacabb233eb5eb"
+    ],
+    "video": [
+      "1896761455"
+    ],
+    "station": [
+      "ra.978194965"
+    ],
+    "curator": [
+      "1526756058"
+    ],
+    "label": [
+      "1556733255"
+    ],
+    "genre": [
+      "21"
+    ]
+  }
+}
