@@ -3,7 +3,7 @@ search per resource type."""
 from apple_music import parsers as P
 from apple_music import refs
 from apple_music.fetch import AppleMusicUpstreamError, api_get, catalog_get, run_parallel
-from apple_music.shared import offset_of, storefront
+from apple_music.shared import storefront
 from urllib.parse import parse_qsl, urlsplit
 
 
@@ -55,37 +55,49 @@ def search_all(query, limit=5, country=None, lang=None):
     }
 
 
-def _follow_single_search_type(sf, query, kind, page, limit, lang):
-    """Follow upstream's own search result cursor instead of guessing offset.
+def _next_search_block(sf, kind, cursor, limit, lang, seen):
+    """Follow only an Apple-issued cursor for this storefront and resource."""
+    if cursor in seen:
+        raise AppleMusicUpstreamError("cyclic Apple Music search cursor")
+    seen.add(cursor)
+    parsed = urlsplit(cursor)
+    if (parsed.path != f"/v1/catalog/{sf}/search" or
+            parsed.scheme not in ("", "https") or
+            parsed.netloc not in ("", "amp-api.music.apple.com")):
+        raise AppleMusicUpstreamError("invalid Apple Music search cursor")
+    params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if not params:
+        raise AppleMusicUpstreamError("empty Apple Music search cursor")
+    # The upstream cursor encodes ranking-offset internals; never replace it
+    # with page*limit. The cursor often omits limit, which defaults to 5.
+    params["limit"] = limit
+    return _block(api_get(parsed.path, params, lang=lang), kind)
 
-    amp-api/search may count additional internal ranking entries when it
-    advances a cursor. Its next offset is not necessarily page * limit.
+
+def _collect_type(sf, query, kind, limit, target, lang):
+    """Read up to target results through this type's independent cursor.
+
+    Returns (resources, has_more) without inventing a numeric offset. A
+    combined curator search may request only part of the last batch.
     """
-    body = catalog_get(sf, "search", {
-        "term": query, "types": kind, "limit": limit,
-    }, lang=lang)
-    block = _block(body, kind)
-    seen = set()
-    for _ in range(1, page):
+    body = catalog_get(sf, "search", {"term": query, "types": kind, "limit": limit},
+                       lang=lang)
+    block, seen, rows = _block(body, kind), set(), []
+    while True:
+        data = block.get("data") or []
+        if not isinstance(data, list):
+            raise AppleMusicUpstreamError("search results must contain a list")
+        remaining = target - len(rows)
+        rows.extend(data[:remaining])
+        more = bool(block.get("next")) or len(data) > remaining
+        if len(rows) >= target:
+            return rows, more
         cursor = block.get("next")
         if not cursor:
-            return {}
-        if cursor in seen:
-            raise AppleMusicUpstreamError("cyclic Apple Music search cursor")
-        seen.add(cursor)
-        parsed = urlsplit(cursor)
-        if (parsed.path != f"/v1/catalog/{sf}/search" or
-                parsed.scheme not in ("", "https") or
-                parsed.netloc not in ("", "amp-api.music.apple.com")):
-            raise AppleMusicUpstreamError("invalid Apple Music search cursor")
-        params = dict(parse_qsl(parsed.query, keep_blank_values=True))
-        if not params:
-            raise AppleMusicUpstreamError("empty Apple Music search cursor")
-        # The returned next URL often omits limit and defaults to 5 items.
-        params["limit"] = limit
-        body = api_get(parsed.path, params, lang=lang)
-        block = _block(body, kind)
-    return block
+            return rows, False
+        if not data:
+            raise AppleMusicUpstreamError("non-progressing Apple Music search cursor")
+        block = _next_search_block(sf, kind, cursor, limit, lang, seen)
 
 
 def _typed_search(kind):
@@ -94,23 +106,30 @@ def _typed_search(kind):
 
     def search(query, page=1, limit=25, country=None, lang=None):
         sf = storefront(country)
-        if len(types) == 1:
-            block = _follow_single_search_type(sf, query, types[0], page, limit, lang)
-            data = block.get("data") or []
-            has_more = bool(block.get("next"))
-        else:
-            # Curators join apple-curators and curators; their separate
-            # cursor streams require a dedicated combined-page policy.
-            body = catalog_get(sf, "search", {
-                "term": query, "types": ",".join(types), "limit": limit,
-                "offset": offset_of(page, limit) or None,
-            }, lang=lang)
-            data, has_more = [], False
-            for t in types:
-                block = _block(body, t)
-                data.extend(block.get("data") or [])
-                has_more = has_more or bool(block.get("next"))
-        return {"query": query, out_key: P.items(data),
+        start, end = (page - 1) * limit, page * limit
+        rows, has_more = [], False
+        # Each catalog resource type has an independent search cursor. Treat
+        # them as an ordered combined stream, bounded by the caller's limit.
+        for i, resource_type in enumerate(types):
+            to_read = end - len(rows)
+            if to_read <= 0:
+                break
+            batch, type_has_more = _collect_type(
+                sf, query, resource_type, limit, to_read, lang,
+            )
+            rows.extend(batch)
+            if len(rows) >= end:
+                has_more = type_has_more
+                if not has_more:
+                    # At an exact type boundary, check if a later category
+                    # contains anything before advertising a next page.
+                    for following_type in types[i + 1:]:
+                        peek, _ = _collect_type(sf, query, following_type, limit, 1, lang)
+                        if peek:
+                            has_more = True
+                            break
+                break
+        return {"query": query, out_key: P.items(rows[start:end]),
                 "pagination": P.pagination(page, limit, has_more)}
 
     search.__name__ = f"search_{out_key}"
