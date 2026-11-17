@@ -61,5 +61,34 @@
     "genre": [
       "21"
     ]
+  },
+  "search_cases": {
+    "stations": [
+      "Apple Music 1",
+      "Apple Music Hits",
+      "Apple Music Country"
+    ],
+    "curators": [
+      "Apple Music",
+      "Beats 1",
+      "Apple Music Hits"
+    ],
+    "labels": [
+      "Republic Records",
+      "EMI",
+      "Sony Music"
+    ],
+    "music-videos": [
+      "Daft Punk",
+      "Beyoncé",
+      "Coldplay",
+      "Taylor Swift"
+    ],
+    "playlists": [
+      "Today's Hits",
+      "Chill",
+      "New Music Daily",
+      "Rap Life"
+    ]
   }
 }
