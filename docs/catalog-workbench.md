@@ -7,7 +7,7 @@ Executar verificações independentes, reproduzíveis e progressivamente variáv
 ## Camadas e gatilhos
 
 1. **Gate offline** — `Catalog unit tests`. Em cada push/PR, Python 3.11 e 3.12; regressões de transporte/paginação/metadados, esquemas Marshmallow, rotas com e sem prefixo `/apple-music`, parâmetros desconhecidos e parâmetros obrigatórios ausentes. Nenhum acesso à Apple. Um novo endpoint sem contrato registrado quebra o teste.
-2. **Mesa ao vivo** — `Catalog workbench - all 51 endpoints`. Em PRs que alteram a própria bancada, percorre **51 rotas em dois storefronts** (perfil `deep`, total 102 casos). Agendada uma vez por semana (quarta-feira, 06:17 UTC, perfil `standard`, 51 casos e um storefront). Executável manualmente pelo GitHub Actions com inputs customizados de perfil, países, consulta, seed e modo estrito. **Agendamento e despacho manual só ficam disponíveis quando o workflow estiver na branch padrão**, isto é, depois do merge desta PR.
+2. **Mesa ao vivo** — `Catalog workbench - all 51 endpoints`. Em toda atualização de PR, percorre **51 rotas em dois storefronts** (perfil `deep`, total 102 casos). Agendada uma vez por semana (quarta-feira, 06:17 UTC, perfil `standard`, 51 casos e um storefront). Executável manualmente pelo GitHub Actions com inputs customizados de perfil, países, consulta, seed e modo estrito. **Agendamento e despacho manual só ficam disponíveis quando o workflow estiver na branch padrão**, isto é, depois do merge desta PR.
 3. **Sondagem pontual** — `scripts/catalog_live_probe.py`, específica para um artista e os storefronts BR/US, não substitui a mesa de 51 endpoints.
 
 Nenhum caso é pulado silenciosamente: um ID necessário não localizado produz `BLOCKED` e falha a rodada. Uma resposta HTTP não 200, JSON incorreto, campos obrigatórios ausentes, número de página inconsistente ou ID divergente produz `FAIL`. Um array válido mas vazio produz `WARN`; a rodada pode ser marcada FAIL também nesses casos com `strict_empty=true`. Um `PASS` indica somente que aquele caso foi respondido e passou os invariantes verificados.
@@ -44,6 +44,29 @@ Para ampliar a investigação para seções vazias, acrescente `--strict-empty`.
 - **FAIL**: HTTP 4xx/5xx na amostra escolhida, identidade equivocada, campos críticos ausentes, paginação malformada ou exceção. Não agrupar automaticamente um 404 regional com bug de código: auditar o caso e a origem do ID.
 - **BLOCKED**: descoberta não encontrou fixture válida ou entrada planejada não passa no próprio esquema; não equivale a sucesso nem a falha comprovada da API.
 - **Mudança de conteúdo não é necessariamente regressão**: playlists e rankings mudam; não fixar nomes, posições ou quantidade exata como assertions gerais. Em vez disso, verificar invariantes estáveis e registrar diferenças.
+
+## Verificação aprofundada de paginação
+
+No perfil `deep`, a bancada não considera suficiente que cada rota responda HTTP 200. Ela:
+
+- Verifica os **102 pares país × endpoint** individualmente (51 rotas em cada país); não aceita cobertura apenas na união das rotas.
+- Valida `current_page`, `per_page`, total de itens, cursor `next` adjacente e consistência dos parâmetros do cursor, incluindo país/termo/limite.
+- Segue a página seguinte, quando anunciada, em oito coleções representativas (busca de músicas, álbuns e artistas, top songs e discos do artista, faixas da playlist, chart de músicas e sala editorial). Reporta a tentativa e seu desfecho separadamente.
+- Em listas estáveis selecionadas, confere a repetição de IDs nas páginas adjacentes. Playlists permitem repetir a mesma gravação, portanto não são marcadas como falha de identidade por repetição deliberada.
+- Exige **ao menos uma consulta real e validada à segunda página por país**. A contagem de `followup_executed` e o `followup_shortfall` aparecem no relatório, que falha quando falta a evidência mínima.
+- Não confunde `not_applicable` (sem próxima página indicada pela API) com `PASS` de uma página adicional executada.
+
+### Causa investigada: pesquisa com offset não aritmético
+
+Em 17/11/2026, a bancada falhou corretamente na pesquisa de músicas da Índia (`Yo-Yo Ma`) por ID repetido entre a primeira e a segunda página ([CI #44107970017](https://github.com/jssantogit/apple-music-scraper/actions/runs/44107970017), 102/102 pares, 16 continuações, 1 FAIL).
+
+A [sondagem de dados brutos #44109197819](https://github.com/jssantogit/apple-music-scraper/actions/runs/44109197819) confirmou que offsets calculados `2`, `5` e `10` não coincidiam com os offsets `9`, `12`, `17` nos links `next` devolvidos pela Apple. O uso do offset aritmético repetiu gravações em seis de seis testes; o cursor da Apple não repetiu nenhuma.
+
+Os endpoints de pesquisa de tipo único agora percorrem a cadeia `next` devolvida pela Apple, validando o caminho e a origem. A [reprodução exata do motor corrigido #44110428583](https://github.com/jssantogit/apple-music-scraper/actions/runs/44110428583) comprovou **zero sobreposições nas seis verificações**. Na busca de curadores, o motor mantém cursores independentes para `apple-curators` e `curators` e pagina o conjunto lógico respeitando o mesmo limite global.
+
+A correção é validada por testes offline de primeiro/segundo/terceiro cursor, erros de URL externa/país incorreto, loop de cursor e composição de curadores. A bancada real foi aprovada em [FR+BR #44109929659](https://github.com/jssantogit/apple-music-scraper/actions/runs/44109929659) e, após unificar o caminho de curadores, [JP+IN #44111142703](https://github.com/jssantogit/apple-music-scraper/actions/runs/44111142703) — nesta última, 102/102 pares, 14 continuações, zero FAIL e 7 WARN.
+
+**Limite da evidência:** paginação real foi verificada em amostras com cursores existentes, não em todos os endpoints para todos os recursos possíveis. Algumas seções Browse regionais podem estar vazias, e isso continua sendo um alerta de qualidade de catálogo, não aprovação de completude.
 
 ## Checkpoints observados em 17/11/2026
 
