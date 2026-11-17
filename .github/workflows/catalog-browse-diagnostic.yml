@@ -25,5 +25,5 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Offline parser contract
         run: python -m pytest -q tests/test_browse_probe.py
-      - name: Compare editorial rooms in BR, FR, US
-        run: python -m scripts.catalog_browse_probe --countries br fr us
+      - name: Compare editorial rooms across BR, FR, US, JP and IN
+        run: python -m scripts.catalog_browse_probe --countries br fr us jp in
