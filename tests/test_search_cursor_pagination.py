@@ -147,7 +147,8 @@ def test_combined_curators_follows_first_resource_type_cursor_before_next_type(m
                          _curator("apple2", "apple-curators")],
                 "next": "/v1/catalog/us/search?types=apple-curators&offset=9",
             }}}
-        raise AssertionError("curators must not be fetched before apple-curators page 2")
+        assert params["types"] == "curators"
+        return {"results": {"curators": {"data": [], "next": None}}}
 
     def next_request(path, params, *, lang=None):
         calls.append(("next", params["offset"]))
@@ -163,4 +164,29 @@ def test_combined_curators_follows_first_resource_type_cursor_before_next_type(m
     monkeypatch.setattr(search, "api_get", next_request)
     page = search.search_curators("curated", page=2, limit=2, country="us")
     assert [item["id"] for item in page["curators"]] == ["apple3", "apple4"]
-    assert calls == [("first", "apple-curators"), ("next", "9")]
+    # A final lookahead is permitted only after exhausting the first stream.
+    assert calls == [("first", "apple-curators"), ("next", "9"),
+                     ("first", "curators")]
+
+
+def test_combined_curators_looks_ahead_at_exact_resource_boundary(monkeypatch):
+    types_seen = []
+
+    def first(sf, path, params, *, lang=None):
+        kind = params["types"]
+        types_seen.append(kind)
+        if kind == "apple-curators":
+            return {"results": {kind: {"data": [
+                _curator("apple1", kind), _curator("apple2", kind),
+            ], "next": None}}}
+        return {"results": {kind: {"data": [
+            _curator("third1", kind),
+        ], "next": None}}}
+
+    monkeypatch.setattr(search, "catalog_get", first)
+    first_page = search.search_curators("mix", page=1, limit=2, country="us")
+    second_page = search.search_curators("mix", page=2, limit=2, country="us")
+    assert [item["id"] for item in first_page["curators"]] == ["apple1", "apple2"]
+    assert first_page["pagination"]["total_pages"] == 2
+    assert [item["id"] for item in second_page["curators"]] == ["third1"]
+    assert types_seen.count("curators") >= 1
