@@ -54,6 +54,8 @@ python -m pip install -r requirements.txt
 python run.py
 ```
 
+By default, the server listens only on `127.0.0.1` to avoid exposing a personal API to the network. To allow connections from another device on a trusted LAN, explicitly use `HOST=0.0.0.0 python run.py` (consider firewall and access controls before doing so).
+
 3️⃣ Get your first data:
 ```bash
 curl "http://localhost:8000/songs/details?song=1649434293"
