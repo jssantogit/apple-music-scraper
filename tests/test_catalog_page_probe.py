@@ -24,3 +24,26 @@ def test_overlap_diagnostic_includes_only_public_ids_and_real_page_boundaries():
 def test_overlap_diagnostic_distinguishes_valid_disjoint_pages():
     result = probe.inspect_pair([{"id": "11"}], [{"id": "44"}])
     assert result["overlap_ids"] == []
+
+
+def test_authoritative_next_cursor_parser_accepts_apple_catalog_only():
+    path, query = probe.parse_next_cursor(
+        "/v1/catalog/in/search?term=Yo-Yo+Ma&types=songs&limit=5&offset=6",
+        country="in",
+    )
+    assert path == "/v1/catalog/in/search"
+    assert query["offset"] == "6"
+    assert query["term"] == "Yo-Yo Ma"
+
+
+def test_authoritative_next_cursor_rejects_other_host_or_storefront():
+    import pytest
+    with pytest.raises(ValueError, match="cursor"):
+        probe.parse_next_cursor(
+            "https://example.com/v1/catalog/in/search?offset=6",
+            country="in",
+        )
+    with pytest.raises(ValueError, match="cursor"):
+        probe.parse_next_cursor(
+            "/v1/catalog/us/search?offset=6", country="in",
+        )
