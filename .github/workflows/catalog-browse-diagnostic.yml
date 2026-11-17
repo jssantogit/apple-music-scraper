@@ -4,8 +4,12 @@ name: Regional Browse shelf diagnostic
 on:
   pull_request:
     paths:
+      - 'apple_music/browse.py'
+      - 'apple_music/refs.py'
+      - 'apple_music/shared.py'
       - 'scripts/catalog_browse_probe.py'
       - 'tests/test_browse_probe.py'
+      - 'tests/test_browse_localization.py'
       - '.github/workflows/catalog-browse-diagnostic.yml'
   workflow_dispatch:
 
@@ -26,4 +30,4 @@ jobs:
       - name: Offline parser contract
         run: python -m pytest -q tests/test_browse_probe.py
       - name: Compare editorial rooms across BR, FR, US, JP and IN
-        run: python -m scripts.catalog_browse_probe --countries br fr us jp in
+        run: python -m scripts.catalog_browse_probe --countries br fr us jp in --verify-shortcuts
