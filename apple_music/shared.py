@@ -89,11 +89,36 @@ def grouping(country, lang=None, **params):
 
 
 def browse_room_ids(country):
-    """English section title -> room id on the Browse page of `country`."""
+    """Actual storefront-localized shelf title -> room ID for the Browse tab.
+
+    A room can have a valid link but no prefetched content. Do not pass this
+    lookup through grouping_sections(): that presentation parser deliberately
+    omits empty shelves. Titles may be localized despite requesting en-US.
+    """
     def build():
         body = grouping(country, lang="en-US", name="music")
-        sections, _ = P.grouping_sections(body)
-        return {s["title"]: s["see_all_id"] for s in sections if s.get("see_all_id")}
+        data = (body or {}).get("data") or []
+        if not data:
+            return {}
+        tabs = (((data[0].get("relationships") or {}).get("tabs") or {})
+                .get("data") or [])
+        if not tabs:
+            return {}
+        shelves = (((tabs[0].get("relationships") or {}).get("children") or {})
+                   .get("data") or [])
+        result = {}
+        for shelf in shelves:
+            attrs = shelf.get("attributes") or {}
+            title = attrs.get("name") or attrs.get("title")
+            relation = ((shelf.get("relationships") or {}).get("room") or {})
+            rooms = relation.get("data") or []
+            room_id = next((item.get("id") for item in rooms
+                            if isinstance(item, dict) and item.get("id")), None)
+            if title and room_id:
+                # Never let another shelf with the same name override the
+                # earlier one silently; caller performs unique semantic match.
+                result.setdefault(title, str(room_id))
+        return result
     return lookup(("browse-rooms", country), build)
 
 

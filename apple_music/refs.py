@@ -211,6 +211,33 @@ BROWSE_SECTIONS = {
     "popular": "Everyone’s Listening To...",
     "dj-mixes": "DJ Mixes of the Month",
 }
+# These are editorial shelf titles actually returned by Apple's grouping API
+# for each storefront (observed 2026-11-17). The grouping API may localize
+# titles even when l=en-US, so English-only matching is not sufficient.
+# Keep these exact, unambiguous semantic aliases separate from numeric room IDs:
+# room IDs are discovered live per storefront, never hardcoded.
+BROWSE_LOCALIZED_TITLES = {
+    "br": {
+        "best-new-songs": "Melhores músicas novas",
+        "new-releases": "Novidades da semana",
+        "recent-releases": "Lançamentos recentes",
+        "updated-playlists": "Playlists atualizadas",
+        "trending-songs": "Músicas em alta",
+        "popular": "Só se ouve…",
+        "dj-mixes": "DJ mixes mais recentes",
+        "coming-soon": "Em breve",
+    },
+    "fr": {
+        "best-new-songs": "Titres du moment",
+        "new-releases": "Nouveautés de la semaine",
+        "recent-releases": "Sorties récentes",
+        "updated-playlists": "Playlists mises à jour",
+        "trending-songs": "Titres tendances",
+        "popular": "Tout le monde écoute...",
+        "dj-mixes": "Derniers DJ mixes",
+        "coming-soon": "Bientôt disponible",
+    },
+}
 # 2026-10-06: Apple reworded "DJ Mixes of the Month" to "Latest DJ Mixes" and
 # the exact-title lookup 404ed, so each shortcut also carries a lowercase
 # fragment that survives such rewordings (matched as a substring).

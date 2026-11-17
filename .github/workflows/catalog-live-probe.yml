@@ -1,0 +1,25 @@
+name: Live catalog BR-US probe (experimental)
+
+# On-demand public metadata check. Not part of the offline PR gate.
+# Available as a workflow_dispatch action once this file is on the default branch.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  public-catalog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Probe Brazil and US (small read-only sample)
+        env:
+          PYTHONUNBUFFERED: '1'
+        run: python -m scripts.catalog_live_probe --countries br us

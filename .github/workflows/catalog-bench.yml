@@ -1,0 +1,81 @@
+name: Catalog workbench - all 51 endpoints
+
+# Offline unit gate remains separate. This workflow exercises live public data
+# and intentionally fails on missing fixture, wrong shape or HTTP failure.
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: 'Optional reproducible integer seed; empty rotates by workflow run number'
+        required: false
+        type: string
+      profile:
+        description: 'standard = 51 routes in one country; deep = 51 per country, two countries'
+        required: true
+        default: standard
+        type: choice
+        options:
+          - standard
+          - deep
+      storefronts:
+        description: 'Candidate country codes (one or two selected according to seed)'
+        required: true
+        default: 'br,us,gb,jp,in,fr'
+        type: string
+      query:
+        description: 'Optional search query overriding the rotating portfolio'
+        required: false
+        type: string
+      strict_empty:
+        description: 'Fail on empty editorial/list data instead of marking WARN'
+        required: true
+        type: boolean
+        default: false
+  schedule:
+    # Weekly portfolio/storefront rotation, not fixed replay of a single artist.
+    - cron: '17 6 * * 3'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: catalog-workbench-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Validate planner and request contracts offline
+        run: python -m pytest -q tests/test_catalog_bench.py
+      - name: Test all 51 real catalog endpoints
+        env:
+          BENCH_SEED: ${{ inputs.seed || '' }}
+          BENCH_PROFILE: ${{ inputs.profile || (github.event_name == 'pull_request' && 'deep') || 'standard' }}
+          BENCH_STOREFRONTS: ${{ inputs.storefronts || 'br,us,gb,jp,in,fr' }}
+          BENCH_QUERY: ${{ inputs.query || '' }}
+          BENCH_STRICT_EMPTY: ${{ inputs.strict_empty || 'false' }}
+        shell: bash
+        run: |
+          args=(--profile "$BENCH_PROFILE" --storefronts "$BENCH_STOREFRONTS"
+                --query "$BENCH_QUERY" --delay 0.5
+                --output catalog-bench-report.json)
+          if [[ -n "$BENCH_SEED" ]]; then args+=(--seed "$BENCH_SEED"); fi
+          if [[ "$BENCH_STRICT_EMPTY" == 'true' ]]; then args+=(--strict-empty); fi
+          python -m scripts.catalog_bench "${args[@]}"
+      - name: Upload per-endpoint report even after failures
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: catalog-workbench-${{ github.run_id }}
+          path: catalog-bench-report.json
+          if-no-files-found: warn
+          retention-days: 30

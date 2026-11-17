@@ -280,10 +280,15 @@ def api_get(path, params=None, *, lang=None, label=None):
             try:
                 _classify(resp, label)
                 body = resp.text or ""
-                if not body.lstrip().startswith("{"):
+                try:
+                    parsed = fastjson.loads(body)
+                except (TypeError, ValueError):
                     dump_debug("nonjson", body)
                     raise AppleMusicBlocked(f"{label} returned a non-JSON body")
-                return resp.json()
+                if not isinstance(parsed, dict):
+                    dump_debug("nonjson", body)
+                    raise AppleMusicBlocked(f"{label} returned a non-JSON body")
+                return parsed
             except _TokenRejected as e:
                 last = e
                 if token_refreshed:
@@ -356,12 +361,20 @@ def follow_all(first_block, *, max_items, lang=None, max_per_call=100):
     until exhausted or `max_items` collected (album tracklists > 300)."""
     items = list((first_block or {}).get("data") or [])
     nxt = (first_block or {}).get("next")
+    visited = set()
     while nxt and len(items) < max_items:
+        # A stale upstream cursor must not cause an unbounded request loop.
+        if nxt in visited:
+            break
+        visited.add(nxt)
         path, _, qs = nxt.partition("?")
         params = dict(parse_qsl(qs, keep_blank_values=True))   # decoded: re-encoded on send
-        params["limit"] = max_per_call
+        params["limit"] = min(max_per_call, max_items - len(items))
         body = api_get(path, params, lang=lang)
-        items.extend(body.get("data") or [])
+        page = body.get("data") or []
+        if not page:
+            break
+        items.extend(page)
         nxt = body.get("next")
     return items[:max_items]
 

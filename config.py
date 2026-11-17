@@ -1,6 +1,7 @@
 """Configuration for the Apple Music Scraper. Everything can be set with an
 environment variable; the defaults work out of the box.
 
+    HOST                interface to bind (default 127.0.0.1; use 0.0.0.0 for LAN)
     PORT                port the API listens on (default 8000)
     APPLE_MUSIC_PROXY   proxy URL for every request, e.g. http://user:pass@host:port
                         (default: none — direct). Apple Music runs no bot
@@ -16,6 +17,7 @@ here if you need to.
 """
 import os
 
+HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8000"))
 
 # Retry policy for transport errors and blocks (every request).
