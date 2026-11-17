@@ -23,7 +23,7 @@ Upstream fields dropped on purpose (and why):
 """
 import html as _html
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 from scraper_utils.values import to_int
 
@@ -74,7 +74,10 @@ def iso_datetime(value):
         dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    # A timezone-less wall clock is not necessarily UTC. Avoid inventing Z.
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        return None
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def human_date(value):
