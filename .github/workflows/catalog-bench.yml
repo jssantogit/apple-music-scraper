@@ -64,7 +64,7 @@ jobs:
       - name: Test all 51 real catalog endpoints
         env:
           BENCH_SEED: ${{ inputs.seed || '' }}
-          BENCH_PROFILE: ${{ inputs.profile || 'standard' }}
+          BENCH_PROFILE: ${{ inputs.profile || (github.event_name == 'pull_request' && 'deep') || 'standard' }}
           BENCH_STOREFRONTS: ${{ inputs.storefronts || 'br,us,gb,jp,in,fr' }}
           BENCH_QUERY: ${{ inputs.query || '' }}
           BENCH_STRICT_EMPTY: ${{ inputs.strict_empty || 'false' }}
