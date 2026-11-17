@@ -68,7 +68,8 @@ def test_validation_rejects_200_with_wrong_shape_or_empty_identity():
 
 def test_empty_editorial_shelf_is_warning_not_false_positive():
     payload = {"section": {"id": None, "title": "Coming Soon"}, "items": [],
-               "current_page": 1, "per_page": 5, "note": "not active"}
+               "current_page": 1, "per_page": 5, "total_pages": 1,
+               "next": None, "previous": None, "note": "not active"}
     checked = bench.validate_result("/browse/coming-soon", 200, payload, {"page": "1"})
     assert checked["result"] == "warn"
 
