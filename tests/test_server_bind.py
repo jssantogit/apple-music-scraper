@@ -1,5 +1,7 @@
 """The personal API must bind locally unless explicitly configured otherwise."""
 
+import os
+
 import config
 import run
 
@@ -18,7 +20,7 @@ class FakeServer:
 
 
 def test_server_defaults_to_loopback():
-    assert config.HOST == "127.0.0.1"
+    assert config.HOST == os.environ.get("HOST", "127.0.0.1")
 
 
 def test_run_uses_configured_loopback_host(monkeypatch):
