@@ -550,14 +550,52 @@ def discover(country, term, seed, pool):
 
 def run_one(path, params, *, country, profile, seed):
     started = time.monotonic()
+    followup = None
     try:
         status, data = wsgi_get(path, params)
         checked = validate_result(path, status, data, params)
+        if (profile == "deep" and path in SECOND_PAGE_PATHS and
+                status == 200 and checked["result"] in ("pass", "warn")):
+            next_params = followup_case(path, params, data)
+            if next_params is None:
+                followup = {
+                    "result": "not_applicable",
+                    "reason": "first page contains no next cursor",
+                }
+            else:
+                second_started = time.monotonic()
+                second_status, second_data = wsgi_get(path, next_params)
+                second_checked = validate_result(path, second_status, second_data,
+                                                 next_params)
+                if second_checked["result"] in ("pass", "warn"):
+                    compared = compare_pages(path, data, second_data)
+                    if compared["result"] == "fail":
+                        second_checked = compared
+                followup = {
+                    "result": second_checked["result"],
+                    "reason": second_checked["reason"],
+                    "http_status": second_status,
+                    "elapsed_ms": round((time.monotonic() - second_started) * 1000),
+                    "observed_count": second_checked.get("observed_count"),
+                    "page": next_params["page"],
+                }
+                if second_checked["result"] == "fail":
+                    checked = {
+                        "result": "fail",
+                        "reason": "next page: " + second_checked["reason"],
+                    }
+                elif second_checked["result"] == "warn" and checked["result"] == "pass":
+                    checked = {
+                        "result": "warn",
+                        "reason": "next page: " + second_checked["reason"],
+                    }
     except Exception as exc:
-        status = None
+        status = locals().get("status")
         checked = {"result": "fail", "reason": "exception: " + safe_error(exc)}
+        if profile == "deep" and path in SECOND_PAGE_PATHS and followup is None:
+            followup = {"result": "fail", "reason": safe_error(exc)}
     elapsed = round((time.monotonic() - started) * 1000)
-    return {
+    row = {
         "path": path, "country": country, "profile": profile, "seed": seed,
         "result": checked["result"], "reason": checked["reason"],
         "http_status": status, "elapsed_ms": elapsed,
@@ -565,6 +603,9 @@ def run_one(path, params, *, country, profile, seed):
         "case": {k: v for k, v in params.items()
                  if k not in ("country", "lang")},
     }
+    if followup is not None:
+        row["followup"] = followup
+    return row
 
 
 def main(argv=None):
@@ -645,6 +686,13 @@ def main(argv=None):
     overview["fixture_ids"] = fixture_ids
     overview["discovery_issues"] = discovery_issues
     overview["results"] = rows
+    overview["followup_cases"] = sum(
+        1 for row in rows if row.get("followup", {}).get("result")
+        not in (None, "not_applicable")
+    )
+    overview["followup_not_applicable"] = sum(
+        1 for row in rows if row.get("followup", {}).get("result") == "not_applicable"
+    )
     Path(args.output).write_text(json.dumps(overview, ensure_ascii=False, indent=2) + "\n",
                                  encoding="utf-8")
     summary = [
