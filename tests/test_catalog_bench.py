@@ -132,3 +132,26 @@ def test_missing_required_parameters_are_rejected_before_network():
         status, response = bench.wsgi_get(path, {})
         assert status == 400, path
         assert "error" in response
+
+
+def test_genre_discovery_checks_editorial_detail_not_just_genre_list():
+    candidates = [{"id": "34", "name": "Music"}, {"id": "21", "name": "Rock"}]
+    seen = []
+
+    def probe(candidate):
+        seen.append(candidate)
+        return candidate == "21"
+
+    selected, attempts = bench.find_usable_genre(candidates, seed=0, probe=probe)
+    assert selected == "21"
+    assert attempts == [{"id": "34", "works": False}, {"id": "21", "works": True}]
+    assert seen == ["34", "21"]
+
+
+def test_genre_discovery_fails_closed_when_all_editorial_pages_absent():
+    selected, attempts = bench.find_usable_genre(
+        [{"id": "34"}, {"id": "21"}], seed=0, probe=lambda _: False,
+    )
+    assert selected is None
+    assert len(attempts) == 2
+    assert all(not row["works"] for row in attempts)
