@@ -103,3 +103,64 @@ def test_cyclic_search_next_cursor_rejected(monkeypatch):
     })
     with pytest.raises(AppleMusicUpstreamError, match="cursor"):
         search.search_songs("Jazz", page=3, limit=1, country="in")
+
+
+def _curator(identifier, kind):
+    return {"id": identifier, "type": kind, "attributes": {"name": identifier}}
+
+
+def test_combined_curators_pagination_never_exceeds_shared_limit(monkeypatch):
+    seen = []
+
+    def fetch(sf, path, params, *, lang=None):
+        seen.append(params["types"])
+        if params["types"] == "apple-curators":
+            return {"results": {"apple-curators": {
+                "data": [_curator("apple1", "apple-curators")], "next": None,
+            }}}
+        if params["types"] == "curators":
+            return {"results": {"curators": {
+                "data": [_curator("third1", "curators"), _curator("third2", "curators")],
+                "next": None,
+            }}}
+        raise AssertionError("combined Apple and external curator results must be fetched separately")
+
+    monkeypatch.setattr(search, "catalog_get", fetch)
+    monkeypatch.setattr(search, "api_get", lambda *args, **kwargs: pytest.fail("unexpected cursor"))
+    first = search.search_curators("curated", page=1, limit=2, country="us")
+    second = search.search_curators("curated", page=2, limit=2, country="us")
+    assert [item["id"] for item in first["curators"]] == ["apple1", "third1"]
+    assert [item["id"] for item in second["curators"]] == ["third2"]
+    assert first["pagination"]["total_pages"] == 2
+    assert second["pagination"]["total_pages"] == 2
+    assert "apple-curators" in seen and "curators" in seen
+
+
+def test_combined_curators_follows_first_resource_type_cursor_before_next_type(monkeypatch):
+    calls = []
+
+    def first(sf, path, params, *, lang=None):
+        calls.append(("first", params["types"]))
+        if params["types"] == "apple-curators":
+            return {"results": {"apple-curators": {
+                "data": [_curator("apple1", "apple-curators"),
+                         _curator("apple2", "apple-curators")],
+                "next": "/v1/catalog/us/search?types=apple-curators&offset=9",
+            }}}
+        raise AssertionError("curators must not be fetched before apple-curators page 2")
+
+    def next_request(path, params, *, lang=None):
+        calls.append(("next", params["offset"]))
+        assert params["offset"] == "9"
+        assert int(params["limit"]) == 2
+        return {"results": {"apple-curators": {
+            "data": [_curator("apple3", "apple-curators"),
+                     _curator("apple4", "apple-curators")],
+            "next": None,
+        }}}
+
+    monkeypatch.setattr(search, "catalog_get", first)
+    monkeypatch.setattr(search, "api_get", next_request)
+    page = search.search_curators("curated", page=2, limit=2, country="us")
+    assert [item["id"] for item in page["curators"]] == ["apple3", "apple4"]
+    assert calls == [("first", "apple-curators"), ("next", "9")]
