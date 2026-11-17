@@ -42,6 +42,36 @@ As rotas vêm de `routes.ENDPOINTS` e são registradas com os dois prefixos: `/r
 
 Testes reproduziram falhas antes das correções (RED). CI executa `python -m pytest -q tests/` em Python 3.11 e 3.12. Não há calls reais à Apple nos testes atuais.
 
+## Checkpoint 2026-11-17 — qualidade editorial e sondagem real BR/US
+
+5. **Fuso horário em datas editoriais:** `parsers.iso_datetime` convertia o relógio local em `Z` sem aplicar o deslocamento, corrompendo até o dia da atualização. Agora horários com offset são convertidos para UTC; horários sem offset não são rotulados como UTC sem prova.
+6. **Busca combinada com listas explicitamente nulas:** `search.search_all` somava `None` e `list` quando uma categoria de curadores estava vazia; agora preserva as demais seções e retorna lista vazia para curadores.
+7. **Sondagem ao vivo opt-in:** `python -m scripts.catalog_live_probe --countries br us` usa a pesquisa por "Daft Punk" (padrão), observa uma amostra de artista, álbum e música e emite somente contagens e presença de campos. Os testes de integração com Apple **não são executados no workflow unitário**; `catalog-live-probe.yml` é somente manual após estar no branch padrão.
+
+Provas de regressão: os 5 casos adicionais de normalização falharam primeiro no run [#44099952657](https://github.com/jssantogit/apple-music-scraper/actions/runs/44099952657), e passaram depois no [#44100047405](https://github.com/jssantogit/apple-music-scraper/actions/runs/44100047405).
+
+### Observação real — 17/11/2026, 14:12 UTC
+
+Sondagem limitada de metadados executada na [CI #44100505439](https://github.com/jssantogit/apple-music-scraper/actions/runs/44100505439), no corte `17fb15bd`; os 23 testes unitários também passaram no mesmo run.
+
+| Presença/contagem observada nos primeiros shelves ou detalhe | BR | US |
+| --- | ---: | ---: |
+| Artista selecionado por pesquisa | 5468295 | 5468295 |
+| Músicas populares na seção inicial | 10 | 10 |
+| Álbuns na seção inicial | 7 | 8 |
+| Singles e EPs na seção inicial | 8 | 10 |
+| Artistas semelhantes na seção inicial | 10 | 10 |
+| Álbum selecionado por pesquisa | 1440871397 | 1440871397 |
+| Faixas retornadas no detalhe do álbum | 18 | 18 |
+| Imagem do artista e capa do álbum (URL presente) | Sim | Sim |
+| UPC do álbum | Sim | Sim |
+| ISRC e preview da música pesquisada | Sim | Sim |
+| ID da música selecionada por busca | 617154366 | 697195462 |
+
+**Interpretação limitada:** os mesmos IDs de artista/álbum expuseram contagens diferentes nos shelves de discografia entre BR e US. Isso apoia preservar storefront e país na chave de cache editorial, **não** afirmar discografia total ou paridade funcional com a Apple Music API oficial. As músicas selecionadas por relevância são diferentes; não usar seus IDs como comparação da mesma gravação. Presença de URL de imagem não prova resolução final/qualidade; `audio_traits` e preview não significam acesso ao stream integral.
+
+O sucesso de uma única sondagem rápida não valida latência p50/p95, estabilidade de token/serviço ou 51 endpoints ao vivo. Nenhum token/JSON bruto foi publicado nos logs.
+
 ## Riscos e lacunas ainda abertas
 
 - **Acesso não oficial:** `apple_music/fetch.py` usa token do player web e APIs não documentadas para integração de terceiros. Endpoints e credenciais podem mudar; licença MIT do scraper não concede direitos sobre dados/serviço da Apple.
