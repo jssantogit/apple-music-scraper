@@ -41,3 +41,50 @@ def test_probe_marks_shortcut_resolution_without_inventing_new_room():
     assert resolved["new-releases"]["source"] == "exact_title"
     assert resolved["best-new-songs"]["room_id"] is None
     assert resolved["best-new-songs"]["source"] == "unresolved"
+
+
+
+def test_probe_uses_production_localized_resolver():
+    rooms = [
+        {"title": "Novidades da semana", "room_id": "br210", "items": 20},
+        {"title": "Em breve", "room_id": "br211", "items": 20},
+    ]
+    matches = probe.evaluate_shortcuts(rooms, country="br")
+    assert matches["new-releases"] == {"room_id": "br210", "source": "localized_title"}
+    assert matches["coming-soon"] == {"room_id": "br211", "source": "localized_title"}
+    assert matches["recent-releases"]["source"] == "unresolved"
+
+
+def test_live_verifier_rejects_empty_shortcut_when_apple_shows_room_items():
+    rooms = [{"title": "Novidades da semana", "room_id": "br210", "items": 20}]
+    def transport(path, args):
+        return 200, {
+            "section": {"id": "br210", "title": "Novidades da semana"},
+            "items": [], "current_page": 1, "per_page": 3,
+            "total_pages": 1, "next": None, "previous": None,
+        }
+    result = probe.verify_routes("br", rooms, transport)
+    selected = next(x for x in result if x["endpoint"] == "/browse/new-releases")
+    assert selected["result"] == "fail"
+    assert "empty" in selected["reason"]
+
+
+def test_live_verifier_reports_genuinely_unlisted_room_as_unavailable():
+    rooms = [{"title": "Best New Songs", "room_id": "jp111", "items": 10}]
+    def transport(path, args):
+        if path == "/browse/best-new-songs":
+            return 200, {
+                "section": {"id": "jp111", "title": "Best New Songs"},
+                "items": [{"id": "1"}], "current_page": 1, "per_page": 3,
+                "total_pages": 2, "next": None, "previous": None,
+            }
+        return 200, {
+            "section": {"id": None, "title": "Not advertised"},
+            "items": [], "note": "not in storefront",
+            "current_page": 1, "per_page": 3, "total_pages": 1,
+            "next": None, "previous": None,
+        }
+    results = probe.verify_routes("jp", rooms, transport)
+    selected = next(x for x in results if x["endpoint"] == "/browse/dj-mixes")
+    assert selected["result"] == "unavailable"
+    assert not any(x["result"] == "fail" for x in results)
