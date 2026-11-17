@@ -1,14 +1,8 @@
 name: Live catalog BR-US probe (experimental)
 
-# Temporary explicit one-off probe of public catalog metadata.
-# This workflow is intentionally separate from the offline unit-test gate.
+# On-demand public metadata check. Not part of the offline PR gate.
+# Available as a workflow_dispatch action once this file is on the default branch.
 on:
-  push:
-    branches:
-      - audit/apple-catalog-hardening-20261117
-    paths:
-      - .github/workflows/catalog-live-probe.yml
-      - scripts/catalog_live_probe.py
   workflow_dispatch:
 
 permissions:
