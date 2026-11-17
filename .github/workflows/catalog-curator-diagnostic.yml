@@ -1,0 +1,42 @@
+name: Rotating curator fixture diagnostic
+
+# Separate, bounded live investigation. It never turns empty results into PASS.
+on:
+  pull_request:
+    paths:
+      - 'scripts/catalog_curator_probe.py'
+      - 'tests/test_curator_probe.py'
+      - '.github/workflows/catalog-curator-diagnostic.yml'
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: 'Optional seed; default uses run number'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-curators:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install requirements
+        run: python -m pip install -r requirements.txt
+      - name: Run offline classification tests
+        run: python -m pytest -q tests/test_curator_probe.py
+      - name: Compare curator candidates in Brazil and France
+        env:
+          BENCH_SEED: ${{ inputs.seed || '' }}
+        shell: bash
+        run: |
+          if [[ -n "$BENCH_SEED" ]]; then
+            python -m scripts.catalog_curator_probe --countries br fr --seed "$BENCH_SEED"
+          else
+            python -m scripts.catalog_curator_probe --countries br fr
+          fi
