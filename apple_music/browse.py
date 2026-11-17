@@ -1,5 +1,7 @@
 """/apple-music/browse*, /apple-music/radio — Apple Music's editorial pages
 (the Browse tab and the Radio tab) and their "see all" sections."""
+import unicodedata
+
 from apple_music import parsers as P
 from apple_music import refs
 from apple_music.fetch import AppleMusicNotFound, api_get, run_parallel
@@ -47,20 +49,46 @@ def section(section, sort=None, page=1, limit=50, country=None, lang=None):
     return {"section": head, "sort": sort or head.get("default_sort"), "items": items, "pagination": pagination}
 
 
+def _browse_title_key(title):
+    """Fold accents, case and punctuation, but do not guess shelf semantics."""
+    folded = unicodedata.normalize("NFKD", (title or "").casefold())
+    return " ".join("".join(
+        char if char.isalnum() else " " for char in folded
+        if not unicodedata.combining(char)
+    ).split())
+
+
+def resolve_browse_room_id(rooms, name, country):
+    """Find one real room from known storefront titles, never from position."""
+    sf = storefront(country)
+    canonical = refs.BROWSE_SECTIONS[name]
+    translated = refs.BROWSE_LOCALIZED_TITLES.get(sf, {}).get(name)
+    candidates = [canonical] + ([translated] if translated else [])
+    for label in candidates:
+        key = _browse_title_key(label)
+        matches = set(rid for title, rid in (rooms or {}).items()
+                      if _browse_title_key(title) == key and rid)
+        if len(matches) == 1:
+            return next(iter(matches))
+        if len(matches) > 1:
+            return None  # ambiguous source; do not choose a random room
+    # Last-resort legacy rewording compatibility, e.g. "Latest DJ Mixes".
+    # An English fragment is only trusted when it selects exactly one room.
+    keyword = _browse_title_key(
+        refs.BROWSE_SECTION_KEYWORDS.get(name, canonical)
+    )
+    matches = set(rid for title, rid in (rooms or {}).items()
+                  if keyword in _browse_title_key(title) and rid)
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
 def _shortcut(name):
     title = refs.BROWSE_SECTIONS[name]
-
-    keyword = refs.BROWSE_SECTION_KEYWORDS.get(name, title.lower())
 
     def handler(sort=None, page=1, limit=50, country=None, lang=None):
         sf = storefront(country)
         rooms = browse_room_ids(sf)
-        room_id = rooms.get(title)
-        if not room_id:
-            # 2026-10-06: Apple rewords shelf titles ("DJ Mixes of the Month"
-            # -> "Latest DJ Mixes"), so fall back to a case-insensitive
-            # fragment match before concluding the shelf is gone.
-            room_id = next((rid for t, rid in rooms.items() if keyword in t.lower()), None)
+        room_id = resolve_browse_room_id(rooms, name, sf)
         if not room_id:
             # 2026-10-06: a shelf Apple is not running right now is "nothing
             # there", not a bad request: answer an empty page with a note so
